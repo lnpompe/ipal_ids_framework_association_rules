@@ -7,7 +7,7 @@ from mlxtend.frequent_patterns import apriori, association_rules
 class AssociationRules(MetaIDS):
     _name = "association-rules"
     _description = "IDS based on AssociationRules"
-    _requires = ["train.ipal"]
+    _requires = ["train.ipal", "live.ipal"]
     _modelfile = "model"
     _association_rules_default_settings = {
         "itemset_size": 5,  # the size of each itemset
@@ -64,29 +64,48 @@ class AssociationRules(MetaIDS):
         n_windows = pd.get_dummies(n_windows.astype(str))
         n_windows.columns = n_windows.columns.str.split('_').str[1].str.split('.').str[0]
         n_windows = n_windows.groupby(level=0, axis=1).sum()
-        print(n_windows)
+        # print(n_windows)
 
         # transforms n_windows from multisets to normal sets
         n_windows = n_windows.astype('bool')
-        print(n_windows)
+        # print(n_windows)
 
         # compute the frequent itemsets
         self.frequent_itemsets = apriori(n_windows, self.settings["min_support"], use_colnames=True)
-        print(self.frequent_itemsets)
+        # print(self.frequent_itemsets)
         # and the association rules
         self.association_rules = association_rules(self.frequent_itemsets, metric='confidence', min_threshold=self.settings["min_confidence"])
-        print(self.association_rules)
+        # self.association_rules['antecedents'] = self.association_rules['antecedents'].apply(lambda x: list(x)[0]).astype("unicode")
+        # self.association_rules['consequents'] = self.association_rules['consequents'].apply(lambda x: list(x)[0]).astype("unicode")
+        # print(self.association_rules)
+        self.print_attributes()
 
     def new_ipal_msg(self, msg):
         self.last_live_packets.append(self.classify(msg))
 
+        if len(self.last_live_packets) > self.settings["itemset_size"]:
+            self.last_live_packets.pop(0)
         # fill the buffer with packets until there are enough
-        if len(self.last_live_packets) < self.settings["itemset_size"]:
+        elif len(self.last_live_packets) < self.settings["itemset_size"]:
             return None, 0
 
-        for rule in self.association_rules:
-            if rule["antecedents"].issubset(self.last_live_packets) \
-                    and not rule["consequents"].issubset(self.last_live_packets):
-                return True, f"The rule{rule['antecedents']} => {rule['consequents']} with confidence {rule['confidence']} was violated"
+        for i in range(len(self.association_rules)):
+
+            antecedent = self.association_rules.loc[i, "antecedents"]
+            consequent = self.association_rules.loc[i, "consequents"]
+
+            test_set = set(self.last_live_packets)
+
+            if antecedent.issubset(test_set) \
+                    and not consequent.issubset(test_set):
+                print(f"The rule {antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}")
+                return True, f"The rule{antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}" #  {rule['confidence']}
 
         return None, 0
+
+    def print_attributes(self):
+        with open("output.txt", 'w') as f:
+            f.write(self.frequent_itemsets.to_string())
+            f.write('\n ASSOCIATION RULES \n')
+            f.write(self.association_rules.to_string())
+
