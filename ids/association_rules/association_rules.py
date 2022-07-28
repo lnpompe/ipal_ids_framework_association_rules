@@ -32,8 +32,10 @@ class AssociationRules(MetaIDS):
         protocol = message["protocol"]
         m_type = message["type"]
         activity = message["activity"]
+        src = message["src"].split(":")[0].replace(".", ":")
+        dest = message["dest"].split(":")[0].replace(".", ":")
 
-        label = f"{protocol}-{m_type}-{activity}"
+        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}"
         if add_class:
             self.classes.add(label)
         return label
@@ -77,8 +79,8 @@ class AssociationRules(MetaIDS):
         self.association_rules = association_rules(self.frequent_itemsets, metric='confidence', min_threshold=self.settings["min_confidence"])
         # self.association_rules['antecedents'] = self.association_rules['antecedents'].apply(lambda x: list(x)[0]).astype("unicode")
         # self.association_rules['consequents'] = self.association_rules['consequents'].apply(lambda x: list(x)[0]).astype("unicode")
-        # print(self.association_rules)
-        self.print_attributes()
+        # print(self.association_rules.to_string())
+        # print(self.classes)
 
     def new_ipal_msg(self, msg):
         self.last_live_packets.append(self.classify(msg))
