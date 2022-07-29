@@ -13,7 +13,8 @@ class AssociationRules(MetaIDS):
     _association_rules_default_settings = {
         "itemset_size": 5,  # the size of each itemset
         "min_support": 0.2,
-        "min_confidence": 0.8
+        "min_confidence": 0.6,
+        "process_value_bin_size": 100,
     }
     _supports_preprocessor = False
 
@@ -29,6 +30,23 @@ class AssociationRules(MetaIDS):
         self.rule_time_delays = {}
         self._add_default_settings(self._association_rules_default_settings)
 
+    # helper method for the classifier
+    # takes as input the value of some register
+    # returns the bin in which the value falls into
+    # if the value is not an integer, the original value is not a number
+    def get_bin(self, value):
+        if isinstance(value, int) or isinstance(value, float):
+            return int(value) - (int(value) % self.settings["process_value_bin_size"])
+            # Alternatively, return the sign of value instead of its bin
+            # if value < 0:
+            #     return -1
+            # if value == 0:
+            #     return 0
+            # if value > 0:
+            #     return 1
+        else:
+            return value
+
     # returns the classification label of the input message
     # if add_class is True additionally adds the label to the list of all known labels
     def classify(self, message, add_class=False):
@@ -38,7 +56,14 @@ class AssociationRules(MetaIDS):
         src = message["src"].split(":")[0].replace(".", ":")
         dest = message["dest"].split(":")[0].replace(".", ":")
 
-        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}"
+        # classify messages by process_values
+        # put values into bins of size process_value_bin_size (see settings)
+        process_values = message["data"]
+        for key, value in process_values.items():
+            process_values[key] = self.get_bin(value)
+        process_values = str(process_values).replace("'", "").replace(".", ":")
+
+        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}-{process_values}"
         if add_class:
             self.classes.add(label)
         return label
@@ -77,6 +102,10 @@ class AssociationRules(MetaIDS):
         self.frequent_itemsets = apriori(n_windows, self.settings["min_support"], use_colnames=True)
         # and the association rules
         self.association_rules = association_rules(self.frequent_itemsets, metric='confidence', min_threshold=self.settings["min_confidence"])
+
+        # for x in self.classes:
+        #     print(x, "\n")
+        # print(self.association_rules.to_string())
 
         print("Starting Postprocessing")
         self.do_postprocessing(ipal)
