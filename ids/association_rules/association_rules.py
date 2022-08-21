@@ -1,8 +1,10 @@
 import json
-
+from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursive_set
+import ipal_iids.settings as settings
 from ids.ids import MetaIDS
 import pandas as pd
 from mlxtend.frequent_patterns import apriori, association_rules
+
 
 
 class AssociationRules(MetaIDS):
@@ -21,13 +23,14 @@ class AssociationRules(MetaIDS):
     def __init__(self, name=None):
         super().__init__(name=name)
         self._name = name
-        self.last_packets = []
         self.classes = set()  # stores all classes produced by the classifier during training
         self.frequent_itemsets = []
         self.association_rules = []
+        self.rule_time_delays = {}
+
+        self.last_packets = []
         self.last_live_packets = []
         self.last_live_timestamps = []
-        self.rule_time_delays = {}
         self._add_default_settings(self._association_rules_default_settings)
 
     # helper method for the classifier
@@ -209,3 +212,43 @@ class AssociationRules(MetaIDS):
             f.write('\n ASSOCIATION RULES \n')
             f.write(self.association_rules.to_string())
 
+    def save_trained_model(self):
+        if self.settings["model-file"] is None:
+            return False
+
+        model = {
+            "_name": self._name,
+            "settings": self.settings,
+            "classes": self.classes,
+            "itemsets": self.frequent_itemsets.to_json(),
+            "association_rules": self.association_rules.to_json(),
+            "rule_time_delays": remap_keys(self.rule_time_delays)
+        }
+
+        with self._open_file(self._resolve_model_file_path(), mode="wt") as f:
+            f.write(json.dumps(model, indent=4, cls=JSONHelper) + "\n")
+
+        return True
+
+    def load_trained_model(self):
+        if self.settings["model-file"] is None:
+            return False
+
+        try:  # Open model file
+            with self._open_file(self._resolve_model_file_path(), mode="rt") as f:
+                model = json.load(f)
+        except FileNotFoundError:
+            settings.logger.info(
+                "Model file {} not found.".format(str(self._resolve_model_file_path()))
+            )
+            return False
+
+        # Load model
+        assert self._name == model["_name"]
+        self.settings = model["settings"]
+        self.classes = set(model["classes"])
+        self.frequent_itemsets = pd.read_json(model["itemsets"])
+        self.association_rules = pd.read_json(model["association_rules"])
+        self.rule_time_delays = to_recursive_set(model["rule_time_delays"])
+
+        return True
