@@ -8,9 +8,9 @@ def remap_keys(mapping):
 
 def to_recursive_set(obj):
     result = {}
-
     for key_value_pair in obj:
-        result[key_value_pair["key"]] = key_value_pair["value"]
+        key = tuple([frozenset(y) for y in key_value_pair["key"]])
+        result[key] = tuple(key_value_pair["value"])
 
     return result
 

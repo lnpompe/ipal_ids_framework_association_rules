@@ -3,6 +3,7 @@ from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursiv
 import ipal_iids.settings as settings
 from ids.ids import MetaIDS
 import pandas as pd
+import numpy as np
 from mlxtend.frequent_patterns import apriori, association_rules
 
 
@@ -74,6 +75,9 @@ class AssociationRules(MetaIDS):
     def train(self, ipal=None, state=None):
         last_n_packets = []
         n_windows = pd.DataFrame()
+        num_seen_packets = 0
+
+        all_windows = {}
 
         with self._open_file(ipal) as f:
             for line in f.readlines():  # generate the sliding windows
@@ -88,27 +92,29 @@ class AssociationRules(MetaIDS):
                     continue
 
                 # add the current sliding window to our database
-                n_windows = pd.concat([n_windows, pd.DataFrame([last_n_packets])])
+                # current_window_dict = {label: [True] for label in last_n_packets}
+                # all_windows.append(current_window_dict)
+                for label in self.classes:
+                    if label not in all_windows:
+                        all_windows[label] = [False] * num_seen_packets + [True]
+                    else:
+                        all_windows[label].append(label in last_n_packets)
+                # n_windows = pd.concat([n_windows, pd.DataFrame(current_window_dict)])
+                num_seen_packets = num_seen_packets+1
+                print(num_seen_packets)
 
                 # pop the first item so that we can move the window by one element
                 last_n_packets.pop(0)
 
-        # transforms n_windows to one-hot encoding multisets
-        n_windows = pd.get_dummies(n_windows.astype(str))
-        n_windows.columns = n_windows.columns.str.split('_').str[1].str.split('.').str[0]
-        n_windows = n_windows.groupby(level=0, axis=1).sum()
-
-        # transforms n_windows from multisets to normal sets
-        n_windows = n_windows.astype('bool')
+        print("Computing One-Hot Encoding")
+        n_windows = pd.DataFrame(all_windows)
 
         # compute the frequent itemsets
+        print("Computing Frequent Itemsets")
         self.frequent_itemsets = apriori(n_windows, self.settings["min_support"], use_colnames=True)
         # and the association rules
+        print("Computing Association Rules")
         self.association_rules = association_rules(self.frequent_itemsets, metric='confidence', min_threshold=self.settings["min_confidence"])
-
-        # for x in self.classes:
-        #     print(x, "\n")
-        # print(self.association_rules.to_string())
 
         print("Starting Postprocessing")
         self.do_postprocessing(ipal)
@@ -124,7 +130,7 @@ class AssociationRules(MetaIDS):
         for i in range(len(self.association_rules)):
             antecedent = self.association_rules.loc[i, "antecedents"]
             consequent = self.association_rules.loc[i, "consequents"]
-            self.rule_time_delays[(antecedent, consequent)] = []
+            self.rule_time_delays[(antecedent, consequent)] = [0, 0]
 
         with self._open_file(ipal) as f:
             for line in f.readlines():
@@ -147,17 +153,18 @@ class AssociationRules(MetaIDS):
 
                     # for each association rule calc_delay will contain a list of all delays between antecedent and consequent
                     if antecedent.issubset(test_set) and consequent.issubset(test_set):
-                        self.rule_time_delays[(antecedent, consequent)].append(
-                            self.calc_delay(last_n_packets, last_n_timestamps, antecedent, consequent)
-                        )
+                        current_delay = self.calc_delay(last_n_packets, last_n_timestamps, antecedent, consequent)
+                        self.rule_time_delays[(antecedent, consequent)][0] = \
+                            min(self.rule_time_delays[(antecedent, consequent)][0], current_delay)
+                        self.rule_time_delays[(antecedent, consequent)][1] = \
+                            max(self.rule_time_delays[(antecedent, consequent)][1], current_delay)
 
                 # pop the first item so that we can move the window by one element
                 last_n_packets.pop(0)
                 last_n_timestamps.pop(0)
 
-        for rule, delays in self.rule_time_delays.items():
-            self.rule_time_delays[rule] = (min(delays), max(delays))
-            print(rule, self.rule_time_delays[rule])
+        # for rule, delays in self.rule_time_delays.items():
+        #     print(rule, self.rule_time_delays[rule])
 
     def calc_delay(self, last_n_packets, last_n_timestamps, antecedent, consequent):
         # last timestamp of the packets of the antecedent
@@ -188,8 +195,8 @@ class AssociationRules(MetaIDS):
 
         for i in range(len(self.association_rules)):
 
-            antecedent = self.association_rules.loc[i, "antecedents"]
-            consequent = self.association_rules.loc[i, "consequents"]
+            antecedent = frozenset(self.association_rules.loc[i, "antecedents"])
+            consequent = frozenset(self.association_rules.loc[i, "consequents"])
 
             test_set = set(self.last_live_packets)
 
@@ -204,7 +211,7 @@ class AssociationRules(MetaIDS):
                     if not min_delay <= current_delay <= max_delay:
                         print(f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}.")
                         return True, f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}."
-        return None, 0
+        return False, 0
 
     def print_attributes(self):
         with open("output.txt", 'w') as f:
@@ -247,8 +254,7 @@ class AssociationRules(MetaIDS):
         assert self._name == model["_name"]
         self.settings = model["settings"]
         self.classes = set(model["classes"])
-        self.frequent_itemsets = pd.read_json(model["itemsets"])
-        self.association_rules = pd.read_json(model["association_rules"])
+        self.frequent_itemsets = pd.read_json(model["itemsets"]) # todo: convert the lists in this FD to tuples
+        self.association_rules = pd.read_json(model["association_rules"]) # todo: convert the lists in this FD to tuples
         self.rule_time_delays = to_recursive_set(model["rule_time_delays"])
-
         return True
