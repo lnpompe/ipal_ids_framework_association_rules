@@ -3,9 +3,7 @@ from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursiv
 import ipal_iids.settings as settings
 from ids.ids import MetaIDS
 import pandas as pd
-import numpy as np
 from mlxtend.frequent_patterns import apriori, association_rules
-
 
 
 class AssociationRules(MetaIDS):
@@ -74,7 +72,6 @@ class AssociationRules(MetaIDS):
 
     def train(self, ipal=None, state=None):
         last_n_packets = []
-        n_windows = pd.DataFrame()
         num_seen_packets = 0
 
         all_windows = {}
@@ -119,6 +116,7 @@ class AssociationRules(MetaIDS):
         print("Starting Postprocessing")
         self.do_postprocessing(ipal)
         print("Finished Training")
+        self.print_to_file()
 
     # iterates over the whole training data once again to generate the dictionary rule_time_delays
     # which in the end contains for each rule (antecedent, consequent)
@@ -151,7 +149,8 @@ class AssociationRules(MetaIDS):
                     consequent = self.association_rules.loc[i, "consequents"]
                     test_set = set(last_n_packets)
 
-                    # for each association rule calc_delay will contain a list of all delays between antecedent and consequent
+                    # for each association rule calc_delay will contain a list of all delays
+                    # between antecedent and consequent
                     if antecedent.issubset(test_set) and consequent.issubset(test_set):
                         current_delay = self.calc_delay(last_n_packets, last_n_timestamps, antecedent, consequent)
                         self.rule_time_delays[(antecedent, consequent)][0] = \
@@ -162,9 +161,6 @@ class AssociationRules(MetaIDS):
                 # pop the first item so that we can move the window by one element
                 last_n_packets.pop(0)
                 last_n_timestamps.pop(0)
-
-        # for rule, delays in self.rule_time_delays.items():
-        #     print(rule, self.rule_time_delays[rule])
 
     def calc_delay(self, last_n_packets, last_n_timestamps, antecedent, consequent):
         # last timestamp of the packets of the antecedent
@@ -213,11 +209,15 @@ class AssociationRules(MetaIDS):
                         return True, f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}."
         return False, 0
 
-    def print_attributes(self):
+    def print_to_file(self):
         with open("output.txt", 'w') as f:
             f.write(self.frequent_itemsets.to_string())
             f.write('\n ASSOCIATION RULES \n')
             f.write(self.association_rules.to_string())
+            # for rule, delays in self.rule_time_delays.items():
+                # self.rule_time_delays[rule] = (min(delays), max(delays))
+                # print(rule, self.rule_time_delays[rule])
+            # f.write(self.rule_time_delays.to_string())
 
     def save_trained_model(self):
         if self.settings["model-file"] is None:
