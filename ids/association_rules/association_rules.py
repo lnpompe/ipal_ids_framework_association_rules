@@ -1,4 +1,5 @@
 import json
+import statistics
 import sys
 from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursive_set
 import ipal_iids.settings as settings
@@ -31,7 +32,7 @@ class AssociationRules(MetaIDS):
         self.frequent_itemsets = []
         self.association_rules = []
         self.rule_time_delays = {}
-        self.kmeans = KMeans()
+        self.kmeans = KMeans() #(n_clusters=self.settings["num_process_value_clusters"])
 
         self.last_packets = []
         self.last_live_packets = []
@@ -156,7 +157,7 @@ class AssociationRules(MetaIDS):
         for i in range(len(self.association_rules)):
             antecedent = self.association_rules.loc[i, "antecedents"]
             consequent = self.association_rules.loc[i, "consequents"]
-            self.rule_time_delays[(antecedent, consequent)] = [0, 0]
+            self.rule_time_delays[(antecedent, consequent)] = []
 
         with self._open_file(ipal) as f:
             for line in f.readlines():
@@ -180,15 +181,18 @@ class AssociationRules(MetaIDS):
                     # for each association rule calc_delay will contain a list of all delays
                     # between antecedent and consequent
                     if antecedent.issubset(test_set) and consequent.issubset(test_set):
-                        current_delay = self.calc_delay(last_n_packets, last_n_timestamps, antecedent, consequent)
-                        self.rule_time_delays[(antecedent, consequent)][0] = \
-                            min(self.rule_time_delays[(antecedent, consequent)][0], current_delay)
-                        self.rule_time_delays[(antecedent, consequent)][1] = \
-                            max(self.rule_time_delays[(antecedent, consequent)][1], current_delay)
+                        self.rule_time_delays[(antecedent, consequent)].append(
+                            self.calc_delay(last_n_packets, last_n_timestamps, antecedent, consequent)
+                        )
 
                 # pop the first item so that we can move the window by one element
                 last_n_packets.pop(0)
                 last_n_timestamps.pop(0)
+
+        for rule, delays in self.rule_time_delays.items():
+            stddev = statistics.stdev(delays)
+            self.rule_time_delays[rule] = (min(delays) - stddev, max(delays) + stddev)
+            print(rule, self.rule_time_delays[rule], stddev)
 
     def calc_delay(self, last_n_packets, last_n_timestamps, antecedent, consequent):
         # last timestamp of the packets of the antecedent
