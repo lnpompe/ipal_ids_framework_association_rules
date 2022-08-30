@@ -11,10 +11,10 @@ diff_file = sys.argv[3] #'GRFICS/attacks/normal_30_01_removed_diff.json'
 df = pd.read_json(in_file, lines=True)
 df.reset_index(drop=True)
 df.set_index('id')
-print(df['timestamp'])
-sample = df.sample(frac=0.9)
+# print(df['timestamp'])
+sample = df.sample(frac=0.999)
 sample = sample.sort_index()
-print(sample['timestamp'])
+# print(sample['timestamp'])
 
 diff = pd.concat([df, sample]).drop_duplicates(subset=['id'], keep=False)
 diff.reset_index(drop=True)
@@ -23,4 +23,4 @@ diff["start"] = diff[PLACEHOLDER]
 diff["end"] = diff[PLACEHOLDER]
 
 sample.to_json(out_file, orient='records', lines=True)
-diff.to_json(diff_file, orient='records', line=True)
+diff.to_json(diff_file, orient='records', lines=True)
