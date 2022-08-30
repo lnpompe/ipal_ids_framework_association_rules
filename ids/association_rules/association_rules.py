@@ -1,9 +1,13 @@
 import json
+import sys
 from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursive_set
 import ipal_iids.settings as settings
 from ids.ids import MetaIDS
 import pandas as pd
 from mlxtend.frequent_patterns import apriori, association_rules
+from sklearn.cluster import KMeans
+
+NX_LABEL = sys.maxsize
 
 
 class AssociationRules(MetaIDS):
@@ -15,7 +19,7 @@ class AssociationRules(MetaIDS):
         "itemset_size": 5,  # the size of each itemset
         "min_support": 0.2,
         "min_confidence": 0.6,
-        "process_value_bin_size": 100,
+        "num_process_value_clusters": 3
     }
     _supports_preprocessor = False
 
@@ -23,31 +27,24 @@ class AssociationRules(MetaIDS):
         super().__init__(name=name)
         self._name = name
         self.classes = set()  # stores all classes produced by the classifier during training
+        self.process_value_labels = set()  # stores all labels of process values
         self.frequent_itemsets = []
         self.association_rules = []
         self.rule_time_delays = {}
+        self.kmeans = KMeans()
 
         self.last_packets = []
         self.last_live_packets = []
         self.last_live_timestamps = []
         self._add_default_settings(self._association_rules_default_settings)
 
-    # helper method for the classifier
-    # takes as input the value of some register
-    # returns the bin in which the value falls into
-    # if the value is not an integer, the original value is not a number
-    def get_bin(self, value):
-        if isinstance(value, int) or isinstance(value, float):
-            return int(value) - (int(value) % self.settings["process_value_bin_size"])
-            # Alternatively, return the sign of value instead of its bin
-            # if value < 0:
-            #     return -1
-            # if value == 0:
-            #     return 0
-            # if value > 0:
-            #     return 1
+    def get_process_value_class(self, process_value_dict):
+        if len(process_value_dict.keys()) == 0:
+            return "no-pvs"
+        elif None in process_value_dict.values():
+            return "request" + str(list(process_value_dict.keys()))
         else:
-            return value
+            return f"Class-{self.kmeans.predict([tuple(process_value_dict.values())])[0]}"
 
     # returns the classification label of the input message
     # if add_class is True additionally adds the label to the list of all known labels
@@ -59,18 +56,21 @@ class AssociationRules(MetaIDS):
         dest = message["dest"].split(":")[0].replace(".", ":")
 
         # classify messages by process_values
-        # put values into bins of size process_value_bin_size (see settings)
-        process_values = message["data"]
-        for key, value in process_values.items():
-            process_values[key] = self.get_bin(value)
-        process_values = str(process_values).replace("'", "").replace(".", ":")
+        process_value_class = self.get_process_value_class(message["data"])
 
-        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}-{process_values}"
+        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}-{process_value_class}"
         if add_class:
             self.classes.add(label)
         return label
 
     def train(self, ipal=None, state=None):
+        print("Training started")
+
+        print("Starting Preprocessing")
+        # In the preprocessing step bins for classifying the process values of packets are computed
+        self.do_preprocessing(ipal)
+        print("Finished Preprocessing")
+
         last_n_packets = []
         num_seen_packets = 0
 
@@ -91,14 +91,13 @@ class AssociationRules(MetaIDS):
                 # add the current sliding window to our database
                 # current_window_dict = {label: [True] for label in last_n_packets}
                 # all_windows.append(current_window_dict)
-                for label in self.classes:
+                for label in self.classes:  # todo: make compatible with new preprocessing
                     if label not in all_windows:
                         all_windows[label] = [False] * num_seen_packets + [True]
                     else:
                         all_windows[label].append(label in last_n_packets)
-                # n_windows = pd.concat([n_windows, pd.DataFrame(current_window_dict)])
+
                 num_seen_packets = num_seen_packets+1
-                print(num_seen_packets)
 
                 # pop the first item so that we can move the window by one element
                 last_n_packets.pop(0)
@@ -117,6 +116,35 @@ class AssociationRules(MetaIDS):
         self.do_postprocessing(ipal)
         print("Finished Training")
         self.print_to_file()
+        print(self.classes)
+
+    # uses k-means clustering to generate bins for process values
+    # packets with process values in the same cluster receive the same label for the process values
+    # each label of a process_value corresponds to one dimension for the clustering
+    def do_preprocessing(self, ipal):
+        # iterates over all packets to find all possible process labels
+        with self._open_file(ipal) as f:
+            for line in f.readlines():
+                self.process_value_labels.update(json.loads(line)["data"].keys())
+
+        # compute data points for clustering, i.e., tuples of process values
+        data_points = []
+        with self._open_file(ipal) as f:
+            for line in f.readlines():
+                current_data_dict = json.loads(line)["data"]
+                current_data_point = []
+
+                # todo: adjust for when some packets do not contain all possible data points
+                if len(current_data_dict) > 0 and None not in current_data_dict.values():
+                    for label in self.process_value_labels:
+                        if label in current_data_dict.keys():
+                            current_data_point.append(current_data_dict[label])
+                        else:
+                            current_data_point.append(NX_LABEL - 1)
+                    data_points.append(current_data_point)
+
+        # compute the clustering
+        self.kmeans.fit(data_points)
 
     # iterates over the whole training data once again to generate the dictionary rule_time_delays
     # which in the end contains for each rule (antecedent, consequent)
@@ -219,6 +247,7 @@ class AssociationRules(MetaIDS):
                 # print(rule, self.rule_time_delays[rule])
             # f.write(self.rule_time_delays.to_string())
 
+    # todo: save kmeans model as well
     def save_trained_model(self):
         if self.settings["model-file"] is None:
             return False
@@ -229,7 +258,7 @@ class AssociationRules(MetaIDS):
             "classes": self.classes,
             "itemsets": self.frequent_itemsets.to_json(),
             "association_rules": self.association_rules.to_json(),
-            "rule_time_delays": remap_keys(self.rule_time_delays)
+            "rule_time_delays": remap_keys(self.rule_time_delays),
         }
 
         with self._open_file(self._resolve_model_file_path(), mode="wt") as f:
