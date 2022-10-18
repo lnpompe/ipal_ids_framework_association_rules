@@ -7,9 +7,11 @@ from ids.ids import MetaIDS
 import pandas as pd
 from mlxtend.frequent_patterns import apriori, association_rules
 from sklearn.cluster import KMeans
+from collections import Counter
 
 NX_LABEL = sys.maxsize
 
+data_label = "state"  # or "data"
 
 class AssociationRules(MetaIDS):
     _name = "association-rules"
@@ -32,7 +34,7 @@ class AssociationRules(MetaIDS):
         self.frequent_itemsets = []
         self.association_rules = []
         self.rule_time_delays = {}
-        self.kmeans = KMeans() #(n_clusters=self.settings["num_process_value_clusters"])
+        self.kmeans = KMeans(n_clusters=self.settings["num_process_value_clusters"])
 
         self.last_packets = []
         self.last_live_packets = []
@@ -45,23 +47,39 @@ class AssociationRules(MetaIDS):
         elif None in process_value_dict.values():
             return "request" + str(list(process_value_dict.keys()))
         else:
-            return f"Class-{self.kmeans.predict([tuple(process_value_dict.values())])[0]}"
+            current_data_point = []
+            for label in self.process_value_labels:
+                if label in process_value_dict.keys():
+                    current_data_point.append(process_value_dict[label])
+                else:
+                    print("Hier ist was falsch")
+            return f"Class_{self.kmeans.predict([current_data_point])[0]}"
+            # return f"Class-{self.kmeans.predict([tuple(process_value_dict.values())])[0]}"
 
     # returns the classification label of the input message
     # if add_class is True additionally adds the label to the list of all known labels
     def classify(self, message, add_class=False):
-        protocol = message["protocol"]
-        m_type = message["type"]
-        activity = message["activity"]
-        src = message["src"].split(":")[0].replace(".", ":")
-        dest = message["dest"].split(":")[0].replace(".", ":")
-
         # classify messages by process_values
-        process_value_class = self.get_process_value_class(message["data"])
+        process_value_class = self.get_process_value_class(message[data_label])
 
-        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}-{process_value_class}"
+        if data_label == "data":  # if we consider .ipal messages
+            protocol = message["protocol"]
+            m_type = message["type"]
+            activity = message["activity"]
+            src = message["src"].split(":")[0].replace(".", ":")
+            dest = message["dest"].split(":")[0].replace(".", ":")
+            label = f"{protocol}-{m_type}-{activity}-{src}-{dest}-{process_value_class}"
+
+        elif data_label == "state":
+            label = process_value_class
+
+        else:
+            print("This should not be reached")
+            exit(1)
+
         if add_class:
             self.classes.add(label)
+
         return label
 
     def train(self, ipal=None, state=None):
@@ -77,10 +95,12 @@ class AssociationRules(MetaIDS):
 
         all_windows = {}
 
+        test_all_labels = []
         with self._open_file(ipal) as f:
             for line in f.readlines():  # generate the sliding windows
                 current_packet = json.loads(line)
                 current_packet_label = self.classify(current_packet, add_class=True)
+                test_all_labels.append(current_packet_label)
 
                 # append the latest packet if the queue contains n-1 packets
                 last_n_packets.append(current_packet_label)
@@ -109,15 +129,18 @@ class AssociationRules(MetaIDS):
         # compute the frequent itemsets
         print("Computing Frequent Itemsets")
         self.frequent_itemsets = apriori(n_windows, self.settings["min_support"], use_colnames=True)
+        for x in self.classes:
+            print(x)
+        print(Counter(test_all_labels))
+
         # and the association rules
         print("Computing Association Rules")
         self.association_rules = association_rules(self.frequent_itemsets, metric='confidence', min_threshold=self.settings["min_confidence"])
+        print(self.association_rules.to_string())
 
         print("Starting Postprocessing")
         self.do_postprocessing(ipal)
         print("Finished Training")
-        self.print_to_file()
-        print(self.classes)
 
     # uses k-means clustering to generate bins for process values
     # packets with process values in the same cluster receive the same label for the process values
@@ -126,13 +149,15 @@ class AssociationRules(MetaIDS):
         # iterates over all packets to find all possible process labels
         with self._open_file(ipal) as f:
             for line in f.readlines():
-                self.process_value_labels.update(json.loads(line)["data"].keys())
+                self.process_value_labels.update(json.loads(line)[data_label].keys())
 
         # compute data points for clustering, i.e., tuples of process values
         data_points = []
         with self._open_file(ipal) as f:
+            # data_points = [json.loads(line)[data_label] for line in f.readlines()]
+
             for line in f.readlines():
-                current_data_dict = json.loads(line)["data"]
+                current_data_dict = json.loads(line)[data_label]
                 current_data_point = []
 
                 # todo: adjust for when some packets do not contain all possible data points
@@ -141,11 +166,18 @@ class AssociationRules(MetaIDS):
                         if label in current_data_dict.keys():
                             current_data_point.append(current_data_dict[label])
                         else:
+                            print("Non-existent label found")
                             current_data_point.append(NX_LABEL - 1)
                     data_points.append(current_data_point)
 
+        print(data_points[0], data_points[-1])
+
         # compute the clustering
-        self.kmeans.fit(data_points)
+        # self.kmeans.fit_predict(data_points)
+        predictions = self.kmeans.fit_predict(data_points)
+        print(Counter(predictions))
+        print([[float(x) for x in y] for y in self.kmeans.cluster_centers_])
+
 
     # iterates over the whole training data once again to generate the dictionary rule_time_delays
     # which in the end contains for each rule (antecedent, consequent)
@@ -192,7 +224,6 @@ class AssociationRules(MetaIDS):
         for rule, delays in self.rule_time_delays.items():
             stddev = statistics.stdev(delays)
             self.rule_time_delays[rule] = (min(delays) - stddev, max(delays) + stddev)
-            print(rule, self.rule_time_delays[rule], stddev)
 
     def calc_delay(self, last_n_packets, last_n_timestamps, antecedent, consequent):
         # last timestamp of the packets of the antecedent
@@ -221,6 +252,12 @@ class AssociationRules(MetaIDS):
         elif len(self.last_live_packets) < self.settings["itemset_size"]:
             return None, 0
 
+        # check state-based correctness
+        # for x in self.kmeans.cluster_centers_:
+        #     print(x)
+        # msg_clustering_class = self.kmeans.predict()
+
+
         for i in range(len(self.association_rules)):
 
             antecedent = frozenset(self.association_rules.loc[i, "antecedents"])
@@ -230,45 +267,35 @@ class AssociationRules(MetaIDS):
 
             if antecedent.issubset(test_set):
                 if not consequent.issubset(test_set):  # if the consequent does not appear at all
-                    print(f"The rule {antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}")
+                    # print(f"The rule {antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}")
                     return True, f"The rule{antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}"
 
                 else:  # if the delay between antecedent and consequent is
                     current_delay = self.calc_delay(self.last_live_packets, self.last_live_timestamps, antecedent, consequent)
                     min_delay, max_delay = self.rule_time_delays[(antecedent, consequent)]
                     if not min_delay <= current_delay <= max_delay:
-                        print(f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}.")
+                        # print(f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}.")
                         return True, f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}."
         return False, 0
 
-    def print_to_file(self):
-        with open("output.txt", 'w') as f:
-            f.write(self.frequent_itemsets.to_string())
-            f.write('\n ASSOCIATION RULES \n')
-            f.write(self.association_rules.to_string())
-            # for rule, delays in self.rule_time_delays.items():
-                # self.rule_time_delays[rule] = (min(delays), max(delays))
-                # print(rule, self.rule_time_delays[rule])
-            # f.write(self.rule_time_delays.to_string())
-
-    # todo: save kmeans model as well
-    def save_trained_model(self):
-        if self.settings["model-file"] is None:
-            return False
-
-        model = {
-            "_name": self._name,
-            "settings": self.settings,
-            "classes": self.classes,
-            "itemsets": self.frequent_itemsets.to_json(),
-            "association_rules": self.association_rules.to_json(),
-            "rule_time_delays": remap_keys(self.rule_time_delays),
-        }
-
-        with self._open_file(self._resolve_model_file_path(), mode="wt") as f:
-            f.write(json.dumps(model, indent=4, cls=JSONHelper) + "\n")
-
-        return True
+    # todo: find a way to serialize k_means object
+    # def save_trained_model(self):
+    #     if self.settings["model-file"] is None:
+    #         return False
+    #
+    #     model = {
+    #         "_name": self._name,
+    #         "settings": self.settings,
+    #         "classes": self.classes,
+    #         "itemsets": self.frequent_itemsets.to_json(),
+    #         "association_rules": self.association_rules.to_json(),
+    #         "rule_time_delays": remap_keys(self.rule_time_delays),
+    #     }
+    #
+    #     with self._open_file(self._resolve_model_file_path(), mode="wt") as f:
+    #         f.write(json.dumps(model, indent=4, cls=JSONHelper) + "\n")
+    #
+    #     return True
 
     def load_trained_model(self):
         if self.settings["model-file"] is None:
