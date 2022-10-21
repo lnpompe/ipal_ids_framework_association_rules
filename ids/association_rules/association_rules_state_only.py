@@ -5,15 +5,15 @@ from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursiv
 import ipal_iids.settings as settings
 from ids.ids import MetaIDS
 import pandas as pd
-from mlxtend.frequent_patterns import apriori, association_rules, fpgrowth
+from mlxtend.frequent_patterns import association_rules, fpgrowth
 from sklearn.cluster import KMeans
 from collections import Counter
 
 NX_LABEL = sys.maxsize
 
 
-class AssociationRules(MetaIDS):
-    _name = "association-rules"
+class AssociationRulesStateOnly(MetaIDS):
+    _name = "association-rules-state-only"
     _description = "IDS based on AssociationRules"
     _requires = ["train.ipal", "live.ipal"]
     _modelfile = "model"
@@ -59,14 +59,8 @@ class AssociationRules(MetaIDS):
     # if add_class is True additionally adds the label to the list of all known labels
     def classify(self, message, add_class=False):
         # classify messages by process_values
-        process_value_class = self.get_process_value_class(message["data"])
-
-        protocol = message["protocol"]
-        m_type = message["type"]
-        activity = message["activity"]
-        src = message["src"].split(":")[0].replace(".", ":")
-        dest = message["dest"].split(":")[0].replace(".", ":")
-        label = f"{protocol}-{m_type}-{activity}-{src}-{dest}-{process_value_class}"
+        process_value_class = self.get_process_value_class(message["state"])
+        label = process_value_class
 
         if add_class:
             self.classes.add(label)
@@ -130,8 +124,6 @@ class AssociationRules(MetaIDS):
                                                    min_threshold=self.settings["min_confidence"])
         print(self.association_rules.to_string())
 
-        print("Starting Postprocessing")
-        self.do_postprocessing(ipal)
         print("Finished Training")
 
     # uses k-means clustering to generate bins for process values
@@ -141,15 +133,15 @@ class AssociationRules(MetaIDS):
         # iterates over all packets to find all possible process labels
         with self._open_file(ipal) as f:
             for line in f.readlines():
-                self.process_value_labels.update(json.loads(line)["data"].keys())
+                self.process_value_labels.update(json.loads(line)["state"].keys())
 
         # compute data points for clustering, i.e., tuples of process values
         data_points = []
         with self._open_file(ipal) as f:
-            # data_points = [json.loads(line)["data"] for line in f.readlines()]
+            # data_points = [json.loads(line)[data_label] for line in f.readlines()]
 
             for line in f.readlines():
-                current_data_dict = json.loads(line)["data"]
+                current_data_dict = json.loads(line)["state"]
                 current_data_point = []
 
                 # todo: adjust for when some packets do not contain all possible data points
@@ -170,67 +162,6 @@ class AssociationRules(MetaIDS):
         print(Counter(predictions))
         print([[float(x) for x in y] for y in self.kmeans.cluster_centers_])
 
-    # iterates over the whole training data once again to generate the dictionary rule_time_delays
-    # which in the end contains for each rule (antecedent, consequent)
-    # the min and max time between the timestamp of the last antecedent and the last consequent packet
-    def do_postprocessing(self, ipal):
-        last_n_packets = []
-        last_n_timestamps = []
-
-        for i in range(len(self.association_rules)):
-            antecedent = self.association_rules.loc[i, "antecedents"]
-            consequent = self.association_rules.loc[i, "consequents"]
-            self.rule_time_delays[(antecedent, consequent)] = []
-
-        with self._open_file(ipal) as f:
-            for line in f.readlines():
-                current_packet = json.loads(line)
-                current_packet_label = self.classify(current_packet)
-                current_packet_timestamp = current_packet["timestamp"]
-
-                # append the latest packet if the queue contains n-1 packets
-                last_n_packets.append(current_packet_label)
-                last_n_timestamps.append(current_packet_timestamp)
-
-                # if the buffer is not full yet, skip and add more packets
-                if len(last_n_packets) < self.settings["itemset_size"]:
-                    continue
-
-                for i in range(len(self.association_rules)):
-                    antecedent = self.association_rules.loc[i, "antecedents"]
-                    consequent = self.association_rules.loc[i, "consequents"]
-                    test_set = set(last_n_packets)
-
-                    # for each association rule calc_delay will contain a list of all delays
-                    # between antecedent and consequent
-                    if antecedent.issubset(test_set) and consequent.issubset(test_set):
-                        self.rule_time_delays[(antecedent, consequent)].append(
-                            self.calc_delay(last_n_packets, last_n_timestamps, antecedent, consequent)
-                        )
-
-                # pop the first item so that we can move the window by one element
-                last_n_packets.pop(0)
-                last_n_timestamps.pop(0)
-
-        for rule, delays in self.rule_time_delays.items():
-            stddev = statistics.stdev(delays)
-            self.rule_time_delays[rule] = (min(delays) - stddev, max(delays) + stddev)
-
-    def calc_delay(self, last_n_packets, last_n_timestamps, antecedent, consequent):
-        # last timestamp of the packets of the antecedent
-        antecedent_time = -1
-        # last timestamp of the packets of the consequent
-        consequent_time = -1
-
-        for cur_label, cur_timestamp in zip(last_n_packets, last_n_timestamps):
-            if cur_label in antecedent and cur_timestamp > antecedent_time:
-                antecedent_time = cur_timestamp
-
-            if cur_label in consequent and cur_timestamp > consequent_time:
-                consequent_time = cur_timestamp
-
-        return antecedent_time - consequent_time
-
     def new_ipal_msg(self, msg):
         self.last_live_packets.append(self.classify(msg))
         self.last_live_timestamps.append(msg["timestamp"])
@@ -243,13 +174,7 @@ class AssociationRules(MetaIDS):
         elif len(self.last_live_packets) < self.settings["itemset_size"]:
             return None, 0
 
-        # check state-based correctness
-        # for x in self.kmeans.cluster_centers_:
-        #     print(x)
-        # msg_clustering_class = self.kmeans.predict()
-
         for i in range(len(self.association_rules)):
-
             antecedent = frozenset(self.association_rules.loc[i, "antecedents"])
             consequent = frozenset(self.association_rules.loc[i, "consequents"])
 
@@ -257,16 +182,7 @@ class AssociationRules(MetaIDS):
 
             if antecedent.issubset(test_set):
                 if not consequent.issubset(test_set):  # if the consequent does not appear at all
-                    # print(f"The rule {antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}")
                     return True, f"The rule{antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}"
-
-                else:  # if the delay between antecedent and consequent is
-                    current_delay = self.calc_delay(self.last_live_packets, self.last_live_timestamps, antecedent,
-                                                    consequent)
-                    min_delay, max_delay = self.rule_time_delays[(antecedent, consequent)]
-                    if not min_delay <= current_delay <= max_delay:
-                        # print(f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}.")
-                        return True, f"The delay between antecedent {antecedent} and consequent {consequent} was too low/high. Min: {min_delay}, Actual: {current_delay}, Max: {max_delay}."
         return False, 0
 
     # todo: find a way to serialize k_means object
@@ -288,25 +204,24 @@ class AssociationRules(MetaIDS):
     #
     #     return True
 
-    def load_trained_model(self):
-        if self.settings["model-file"] is None:
-            return False
-
-        try:  # Open model file
-            with self._open_file(self._resolve_model_file_path(), mode="rt") as f:
-                model = json.load(f)
-        except FileNotFoundError:
-            settings.logger.info(
-                "Model file {} not found.".format(str(self._resolve_model_file_path()))
-            )
-            return False
-
-        # Load model
-        assert self._name == model["_name"]
-        self.settings = model["settings"]
-        self.classes = set(model["classes"])
-        self.frequent_itemsets = pd.read_json(model["itemsets"])  # todo: convert the lists in this FD to tuples
-        self.association_rules = pd.read_json(
-            model["association_rules"])  # todo: convert the lists in this FD to tuples
-        self.rule_time_delays = to_recursive_set(model["rule_time_delays"])
-        return True
+    # def load_trained_model(self):
+    #     if self.settings["model-file"] is None:
+    #         return False
+    #
+    #     try:  # Open model file
+    #         with self._open_file(self._resolve_model_file_path(), mode="rt") as f:
+    #             model = json.load(f)
+    #     except FileNotFoundError:
+    #         settings.logger.info(
+    #             "Model file {} not found.".format(str(self._resolve_model_file_path()))
+    #         )
+    #         return False
+    #
+    #     # Load model
+    #     assert self._name == model["_name"]
+    #     self.settings = model["settings"]
+    #     self.classes = set(model["classes"])
+    #     self.frequent_itemsets = pd.read_json(model["itemsets"]) # todo: convert the lists in this FD to tuples
+    #     self.association_rules = pd.read_json(model["association_rules"]) # todo: convert the lists in this FD to tuples
+    #     self.rule_time_delays = to_recursive_set(model["rule_time_delays"])
+    #     return True

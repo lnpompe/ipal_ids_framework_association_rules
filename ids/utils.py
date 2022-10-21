@@ -1,4 +1,5 @@
 from .association_rules.association_rules import AssociationRules
+from .association_rules.association_rules_state_only import AssociationRulesStateOnly
 from .autoregression.Autoregression import Autoregression
 from .classifier.BLSTM import BLSTM
 from .classifier.DecisionTree import DecisionTree
@@ -31,7 +32,8 @@ idss = [
     RandomForest,
     SVM,
     SteadyTime,
-    AssociationRules
+    AssociationRules,
+    AssociationRulesStateOnly
 ]
 
 
