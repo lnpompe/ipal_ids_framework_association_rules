@@ -1,8 +1,5 @@
 import json
-import statistics
 import sys
-from ids.association_rules.JSONHelper import JSONHelper, remap_keys, to_recursive_set
-import ipal_iids.settings as settings
 from ids.ids import MetaIDS
 import pandas as pd
 from mlxtend.frequent_patterns import association_rules, fpgrowth
@@ -10,7 +7,7 @@ from sklearn.cluster import KMeans
 from collections import Counter
 
 NX_LABEL = sys.maxsize
-
+NUM_ITEMS_TOTAL = "416800"
 
 class AssociationRulesStateOnly(MetaIDS):
     _name = "association-rules-state-only"
@@ -37,7 +34,6 @@ class AssociationRulesStateOnly(MetaIDS):
 
         self.last_packets = []
         self.last_live_packets = []
-        self.last_live_timestamps = []
         self._add_default_settings(self._association_rules_default_settings)
 
     def get_process_value_class(self, process_value_dict):
@@ -80,12 +76,13 @@ class AssociationRulesStateOnly(MetaIDS):
 
         all_windows = {}
 
-        test_all_labels = []
+        cnt = Counter()
         with self._open_file(ipal) as f:
             for line in f.readlines():  # generate the sliding windows
                 current_packet = json.loads(line)
                 current_packet_label = self.classify(current_packet, add_class=True)
-                test_all_labels.append(current_packet_label)
+                cnt.update([current_packet_label])
+                print(cnt, str(cnt.total()) + " / " + NUM_ITEMS_TOTAL)
 
                 # append the latest packet if the queue contains n-1 packets
                 last_n_packets.append(current_packet_label)
@@ -114,9 +111,6 @@ class AssociationRulesStateOnly(MetaIDS):
         # compute the frequent itemsets
         print("Computing Frequent Itemsets")
         self.frequent_itemsets = fpgrowth(n_windows, self.settings["min_support"], use_colnames=True)
-        for x in self.classes:
-            print(x)
-        print(Counter(test_all_labels))
 
         # and the association rules
         print("Computing Association Rules")
@@ -138,7 +132,6 @@ class AssociationRulesStateOnly(MetaIDS):
         # compute data points for clustering, i.e., tuples of process values
         data_points = []
         with self._open_file(ipal) as f:
-            # data_points = [json.loads(line)[data_label] for line in f.readlines()]
 
             for line in f.readlines():
                 current_data_dict = json.loads(line)["state"]
@@ -164,64 +157,25 @@ class AssociationRulesStateOnly(MetaIDS):
 
     def new_ipal_msg(self, msg):
         self.last_live_packets.append(self.classify(msg))
-        self.last_live_timestamps.append(msg["timestamp"])
 
         if len(self.last_live_packets) > self.settings["itemset_size"]:
             self.last_live_packets.pop(0)
-            self.last_live_timestamps.pop(0)
 
         # fill the buffer with packets until there are enough
         elif len(self.last_live_packets) < self.settings["itemset_size"]:
             return None, 0
 
-        for i in range(len(self.association_rules)):
-            antecedent = frozenset(self.association_rules.loc[i, "antecedents"])
-            consequent = frozenset(self.association_rules.loc[i, "consequents"])
+        last_live_packets_set = set(self.last_live_packets)
+        print(last_live_packets_set)
 
-            test_set = set(self.last_live_packets)
+        if len(last_live_packets_set) > 1:
+            for i in range(len(self.association_rules)):
+                antecedent = frozenset(self.association_rules.loc[i, "antecedents"])
+                consequent = frozenset(self.association_rules.loc[i, "consequents"])
 
-            if antecedent.issubset(test_set):
-                if not consequent.issubset(test_set):  # if the consequent does not appear at all
-                    return True, f"The rule{antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}"
+                test_set = set(self.last_live_packets)
+
+                if antecedent.issubset(test_set):
+                    if not consequent.issubset(test_set):  # if the consequent does not appear at all
+                        return True, f"The rule{antecedent} => {consequent} was violated with confidence {self.association_rules.loc[i, 'confidence']}"
         return False, 0
-
-    # todo: find a way to serialize k_means object
-    # def save_trained_model(self):
-    #     if self.settings["model-file"] is None:
-    #         return False
-    #
-    #     model = {
-    #         "_name": self._name,
-    #         "settings": self.settings,
-    #         "classes": self.classes,
-    #         "itemsets": self.frequent_itemsets.to_json(),
-    #         "association_rules": self.association_rules.to_json(),
-    #         "rule_time_delays": remap_keys(self.rule_time_delays),
-    #     }
-    #
-    #     with self._open_file(self._resolve_model_file_path(), mode="wt") as f:
-    #         f.write(json.dumps(model, indent=4, cls=JSONHelper) + "\n")
-    #
-    #     return True
-
-    # def load_trained_model(self):
-    #     if self.settings["model-file"] is None:
-    #         return False
-    #
-    #     try:  # Open model file
-    #         with self._open_file(self._resolve_model_file_path(), mode="rt") as f:
-    #             model = json.load(f)
-    #     except FileNotFoundError:
-    #         settings.logger.info(
-    #             "Model file {} not found.".format(str(self._resolve_model_file_path()))
-    #         )
-    #         return False
-    #
-    #     # Load model
-    #     assert self._name == model["_name"]
-    #     self.settings = model["settings"]
-    #     self.classes = set(model["classes"])
-    #     self.frequent_itemsets = pd.read_json(model["itemsets"]) # todo: convert the lists in this FD to tuples
-    #     self.association_rules = pd.read_json(model["association_rules"]) # todo: convert the lists in this FD to tuples
-    #     self.rule_time_delays = to_recursive_set(model["rule_time_delays"])
-    #     return True
