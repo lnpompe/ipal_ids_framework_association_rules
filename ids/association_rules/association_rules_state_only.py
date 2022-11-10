@@ -1,4 +1,5 @@
 import json
+import statistics
 import sys
 from ids.ids import MetaIDS
 import pandas as pd
@@ -24,6 +25,7 @@ class AssociationRulesStateOnly(MetaIDS):
 
     def __init__(self, name=None):
         super().__init__(name=name)
+        self.variances = []
         self._name = name
         self.classes = set()  # stores all classes produced by the classifier during training
         self.process_value_labels = set()  # stores all labels of process values
@@ -37,18 +39,19 @@ class AssociationRulesStateOnly(MetaIDS):
         self._add_default_settings(self._association_rules_default_settings)
 
     def get_process_value_class(self, process_value_dict):
-        if len(process_value_dict.keys()) == 0:
-            return "no-pvs"
-        elif None in process_value_dict.values():
-            return "request" + str(list(process_value_dict.keys()))
-        else:
-            current_data_point = []
-            for label in self.process_value_labels:
-                if label in process_value_dict.keys():
-                    current_data_point.append(process_value_dict[label])
-                else:
-                    print("Hier ist was falsch")
-            return f"Class_{self.kmeans.predict([current_data_point])[0]}"
+        current_data_point = list(process_value_dict.values())
+        # if len(process_value_dict.keys()) == 0:
+        #     return "no-pvs"
+        # elif None in process_value_dict.values():
+        #     return "request" + str(list(process_value_dict.keys()))
+        # else:
+        #     current_data_point = []
+        #     for label in self.process_value_labels:
+        #         if label in process_value_dict.keys():
+        #             current_data_point.append(process_value_dict[label])
+        #         else:
+        #             print("Hier ist was falsch")
+        return int(self.kmeans.predict([current_data_point])[0])
             # return f"Class-{self.kmeans.predict([tuple(process_value_dict.values())])[0]}"
 
     # returns the classification label of the input message
@@ -82,7 +85,7 @@ class AssociationRulesStateOnly(MetaIDS):
                 current_packet = json.loads(line)
                 current_packet_label = self.classify(current_packet, add_class=True)
                 cnt.update([current_packet_label])
-                print(cnt, str(cnt.total()) + " / " + NUM_ITEMS_TOTAL)
+                # print(cnt, str(cnt.total()) + " / " + NUM_ITEMS_TOTAL)
 
                 # append the latest packet if the queue contains n-1 packets
                 last_n_packets.append(current_packet_label)
@@ -134,29 +137,47 @@ class AssociationRulesStateOnly(MetaIDS):
         with self._open_file(ipal) as f:
 
             for line in f.readlines():
-                current_data_dict = json.loads(line)["state"]
-                current_data_point = []
+                current_data_point = list(json.loads(line)["state"].values())
 
-                # todo: adjust for when some packets do not contain all possible data points
-                if len(current_data_dict) > 0 and None not in current_data_dict.values():
-                    for label in self.process_value_labels:
-                        if label in current_data_dict.keys():
-                            current_data_point.append(current_data_dict[label])
-                        else:
-                            print("Non-existent label found")
-                            current_data_point.append(NX_LABEL - 1)
-                    data_points.append(current_data_point)
-
-        print(data_points[0], data_points[-1])
+                data_points.append(current_data_point)
 
         # compute the clustering
-        # self.kmeans.fit_predict(data_points)
-        predictions = self.kmeans.fit_predict(data_points)
-        print(Counter(predictions))
-        print([[float(x) for x in y] for y in self.kmeans.cluster_centers_])
+        self.kmeans.fit(data_points)
+        # predictions = self.kmeans.fit_predict(data_points)
+        # print(predictions)
+        # predictions_by_class = []
+        # self.variances = []
+        # for x in range(self.kmeans.n_clusters):
+        #     predictions_by_class.append([])
+        #     self.variances.append([])
+        #
+        # for datapoint, prediction in zip(data_points, predictions):
+        #     predictions_by_class[prediction].append(datapoint)
+
+
+        # for x in range(self.kmeans.n_clusters):
+        #     for y in range(len(data_points[0])):
+        #         self.variances[x].append(statistics.stdev([value[y] for value in predictions_by_class[x]]))
+                # print(x, y)
+                # print(statistics.stdev([value[y] for value in predictions_by_class[x]], self.kmeans.cluster_centers_[x][y]))
+
+        # distances = [abs(data_point - mean_point) - stdev for (data_point, mean_point, stdev) in zip(data_points[0], self.kmeans.cluster_centers_[0], self.variances[0])]
+        # print(distances)
+        # print(len(data_points[0]), data_points[0])
+        # print(len(self.kmeans.cluster_centers_[0]), self.kmeans.cluster_centers_[0])
+        # print(len(self.variances[0]), self.variances[0])
+        # exit()
 
     def new_ipal_msg(self, msg):
-        self.last_live_packets.append(self.classify(msg))
+        current_label = self.classify(msg)
+        self.last_live_packets.append(current_label)
+
+
+        # Check distance from mean center
+        # distances = [10 * stdev - abs(data_point - mean_point) for (data_point, mean_point, stdev) in zip(list(msg["state"].values()), self.kmeans.cluster_centers_[current_label], self.variances[current_label])]
+        # if any(d < 0 for d in distances):
+        #     return True, f"Distance to cluster center was larger than standard deviation"
+
 
         if len(self.last_live_packets) > self.settings["itemset_size"]:
             self.last_live_packets.pop(0)
@@ -166,7 +187,7 @@ class AssociationRulesStateOnly(MetaIDS):
             return None, 0
 
         last_live_packets_set = set(self.last_live_packets)
-        print(last_live_packets_set)
+        # print(last_live_packets_set)
 
         if len(last_live_packets_set) > 1:
             for i in range(len(self.association_rules)):
